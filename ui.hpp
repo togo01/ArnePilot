@@ -1,19 +1,29 @@
 #ifndef _UI_H
 #define _UI_H
 
+#ifdef __APPLE__
+#include <OpenGL/gl3.h>
+#define NANOVG_GL3_IMPLEMENTATION
+#define nvgCreate nvgCreateGL3
+#else
 #include <GLES3/gl3.h>
 #include <EGL/egl.h>
+#define NANOVG_GLES3_IMPLEMENTATION
+#define nvgCreate nvgCreateGLES3
+#endif
+
+#include <pthread.h>
 
 #include "nanovg.h"
 
 #include "common/mat.h"
 #include "common/visionipc.h"
+#include "common/visionimg.h"
 #include "common/framebuffer.h"
 #include "common/modeldata.h"
 #include "messaging.hpp"
 
 #include "cereal/gen/c/log.capnp.h"
-#include "cereal/gen/c/arne182.capnp.h"
 
 #include "sound.hpp"
 
@@ -33,7 +43,7 @@
 #endif
 
 #define UI_BUF_COUNT 4
-#define SHOW_SPEEDLIMIT 1
+//#define SHOW_SPEEDLIMIT 1
 //#define DEBUG_TURN
 
 const int vwp_w = 1920;
@@ -87,11 +97,7 @@ typedef struct UIScene {
   float v_ego;
   bool decel_for_model;
 
-  float gpsAccuracy;
   float speedlimit;
-  float angleSteers;
-  float speedlimitaheaddistance;
-  bool speedlimitahead_valid;
   bool speedlimit_valid;
   bool map_valid;
 
@@ -122,15 +128,6 @@ typedef struct UIScene {
 
   // Used to show gps planner status
   bool gps_planner_active;
-
-  // Brake Lights
-  bool brakeLights;
-
-  // dev ui
-  float angleSteersDes;
-  float pa0;
-  float freeSpace;
-
 } UIScene;
 
 typedef struct {
@@ -155,8 +152,6 @@ typedef struct UIState {
   // framebuffer
   FramebufferState *fb;
   int fb_w, fb_h;
-  EGLDisplay display;
-  EGLSurface surface;
 
   // NVG
   NVGcontext *vg;
@@ -170,20 +165,16 @@ typedef struct UIState {
   int img_turn;
   int img_face;
   int img_map;
-  int img_brake;
 
   // sockets
   Context *ctx;
-  Context *ctxarne182;
   SubSocket *model_sock;
   SubSocket *controlsstate_sock;
   SubSocket *livecalibration_sock;
   SubSocket *radarstate_sock;
-  SubSocket *carstate_sock;
   SubSocket *map_data_sock;
   SubSocket *uilayout_sock;
   Poller * poller;
-  Poller * pollerarne182;
 
   int active_app;
 
@@ -207,10 +198,6 @@ typedef struct UIState {
 
   GLint frame_pos_loc, frame_texcoord_loc;
   GLint frame_texture_loc, frame_transform_loc;
-
-  GLuint line_program;
-  GLint line_pos_loc, line_color_loc;
-  GLint line_transform_loc;
 
   int rgb_width, rgb_height, rgb_stride;
   size_t rgb_buf_len;
@@ -260,9 +247,6 @@ typedef struct UIState {
   model_path_vertices_data model_path_vertices[MODEL_LANE_PATH_CNT * 2];
 
   track_vertices_data track_vertices[2];
-
-  // dev ui
-  SubSocket *thermal_sock;
 } UIState;
 
 // API
