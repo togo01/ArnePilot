@@ -3,8 +3,12 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <assert.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+
+#include <capnp/serialize.h>
+#include "cereal/gen/cpp/arne182.capnp.h"
 
 #include <json.h>
 #include <czmq.h>
@@ -18,6 +22,8 @@
 
 #include "ui.hpp"
 #include "sound.hpp"
+#include "dashcam.h"
+
 
 static int last_brightness = -1;
 static void set_brightness(UIState *s, int brightness) {
@@ -106,24 +112,44 @@ static void ui_init(UIState *s) {
   pthread_cond_init(&s->bg_cond, NULL);
 
   s->ctx = Context::create();
+  s->ctxarne182 = Context::create();
   s->model_sock = SubSocket::create(s->ctx, "model");
   s->controlsstate_sock = SubSocket::create(s->ctx, "controlsState");
   s->uilayout_sock = SubSocket::create(s->ctx, "uiLayoutState");
   s->livecalibration_sock = SubSocket::create(s->ctx, "liveCalibration");
   s->radarstate_sock = SubSocket::create(s->ctx, "radarState");
+  s->carstate_sock = SubSocket::create(s->ctx, "carState");
+  s->livempc_sock = SubSocket::create(s->ctx, "liveMpc");
+  s->gps_sock = SubSocket::create(s->ctx, "gpsLocationExternal");
+  s->thermal_sock = SubSocket::create(s->ctxarne182, "thermalonline");
+  s->arne182_sock = SubSocket::create(s->ctxarne182, "arne182Status");
+  s->dynamicfollowbutton_sock = PubSocket::create(s->ctxarne182, "dynamicFollowButton");
 
   assert(s->model_sock != NULL);
   assert(s->controlsstate_sock != NULL);
   assert(s->uilayout_sock != NULL);
   assert(s->livecalibration_sock != NULL);
   assert(s->radarstate_sock != NULL);
+  assert(s->carstate_sock != NULL);
+  assert(s->livempc_sock != NULL);
+  assert(s->gps_sock != NULL);
+  assert(s->thermal_sock != NULL);
+  assert(s->arne182_sock != NULL);
+  assert(s->dynamicfollowbutton_sock != NULL);
 
   s->poller = Poller::create({
                               s->model_sock,
                               s->controlsstate_sock,
                               s->uilayout_sock,
                               s->livecalibration_sock,
-                              s->radarstate_sock
+                              s->radarstate_sock,
+                              s->carstate_sock,
+                              s->livempc_sock,
+                              s->gps_sock
+                             });
+  s->pollerarne182 = Poller::create({
+                              s->thermal_sock,
+                              s->arne182_sock
                              });
 
 #ifdef SHOW_SPEEDLIMIT
@@ -172,6 +198,8 @@ static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
       .front_box_height = ui_info.front_box_height,
       .world_objects_visible = false,  // Invisible until we receive a calibration message.
       .gps_planner_active = false,
+      .recording = false,
+      .dfButtonStatus = 0,
   };
 
   s->rgb_width = back_bufs.width;
@@ -200,6 +228,24 @@ static void ui_init_vision(UIState *s, const VisionStreamBufs back_bufs,
   s->longitudinal_control_timeout = UI_FREQ / 3;
   s->is_metric_timeout = UI_FREQ / 2;
   s->limit_set_speed_timeout = UI_FREQ;
+}
+
+bool df_button_clicked(int touch_x, int touch_y) {
+  if (touch_x >= 1212 && touch_x <= 1310 && touch_y >= 902 && touch_y <= 1013) {
+    return true;
+  }
+  return false;
+}
+
+void send_df(UIState *s, int status){
+  capnp::MallocMessageBuilder msg;
+  cereal::EventArne182::Builder event = msg.initRoot<cereal::EventArne182>();
+  auto dfStatus = event.initDynamicFollowButton();
+  dfStatus.setStatus(status);
+
+  auto words = capnp::messageToFlatArray(msg);
+  auto bytes = words.asBytes();
+  s->dynamicfollowbutton_sock->send((char*)bytes.begin(), bytes.size());
 }
 
 static PathData read_path(cereal_ModelData_PathData_ptr pathp) {
@@ -266,6 +312,15 @@ void handle_message(UIState *s, Message * msg) {
     struct cereal_ControlsState datad;
     cereal_read_ControlsState(&datad, eventd.controlsState);
 
+    struct cereal_ControlsState_LateralPIDState pdata;
+    cereal_read_ControlsState_LateralPIDState(&pdata, datad.lateralControlState.pidState);
+
+    struct cereal_ControlsState_LateralLQRState qdata;
+    cereal_read_ControlsState_LateralLQRState(&qdata, datad.lateralControlState.lqrState);
+
+    struct cereal_ControlsState_LateralINDIState rdata;
+    cereal_read_ControlsState_LateralINDIState(&rdata, datad.lateralControlState.indiState);
+
     s->controls_timeout = 1 * UI_FREQ;
     s->controls_seen = true;
 
@@ -273,16 +328,23 @@ void handle_message(UIState *s, Message * msg) {
       s->scene.v_cruise_update_ts = eventd.logMonoTime;
     }
     s->scene.v_cruise = datad.vCruise;
+    s->scene.angleSteers = datad.angleSteers;
     s->scene.v_ego = datad.vEgo;
+    s->scene.angleSteers = datad.angleSteers;
     s->scene.curvature = datad.curvature;
     s->scene.engaged = datad.enabled;
     s->scene.engageable = datad.engageable;
     s->scene.gps_planner_active = datad.gpsPlannerActive;
     s->scene.monitoring_active = datad.driverMonitoringOn;
+    s->scene.steerOverride = datad.steerOverride;
+    s->scene.output_scale = qdata.output + rdata.output + pdata.output;
 
     s->scene.frontview = datad.rearViewCam;
 
     s->scene.decel_for_model = datad.decelForModel;
+
+    // getting steering related data for dev ui
+    s->scene.angleSteersDes = datad.angleSteersDes;
 
     if (datad.alertSound != cereal_CarControl_HUDControl_AudibleAlert_none && datad.alertSound != s->alert_sound) {
       if (s->alert_sound != cereal_CarControl_HUDControl_AudibleAlert_none) {
@@ -357,11 +419,17 @@ void handle_message(UIState *s, Message * msg) {
     struct cereal_RadarState datad;
     cereal_read_RadarState(&datad, eventd.radarState);
     struct cereal_RadarState_LeadData leaddatad;
+    struct cereal_RadarState_LeadData leaddatae;
     cereal_read_RadarState_LeadData(&leaddatad, datad.leadOne);
+    cereal_read_RadarState_LeadData(&leaddatae, datad.leadTwo);
     s->scene.lead_status = leaddatad.status;
     s->scene.lead_d_rel = leaddatad.dRel;
     s->scene.lead_y_rel = leaddatad.yRel;
     s->scene.lead_v_rel = leaddatad.vRel;
+    s->scene.lead_status2 = leaddatae.status;
+    s->scene.lead_d_rel2 = leaddatae.dRel;
+    s->scene.lead_y_rel2 = leaddatae.yRel;
+    s->scene.lead_v_rel2 = leaddatae.vRel;
     s->livempc_or_radarstate_changed = true;
   } else if (eventd.which == cereal_Event_liveCalibration) {
     s->scene.world_objects_visible = true;
@@ -417,8 +485,60 @@ void handle_message(UIState *s, Message * msg) {
     struct cereal_LiveMapData datad;
     cereal_read_LiveMapData(&datad, eventd.liveMapData);
     s->scene.map_valid = datad.mapValid;
+    s->scene.speedlimit = datad.speedLimit;
+    s->scene.speedlimitahead_valid = datad.speedLimitAheadValid;
+    s->scene.speedlimitaheaddistance = datad.speedLimitAheadDistance;
+    s->scene.speedlimit_valid = datad.speedLimitValid;
+  } else if (eventd.which == cereal_Event_carState) {
+    struct cereal_CarState datad;
+    cereal_read_CarState(&datad, eventd.carState);
+    s->scene.brakeLights = datad.brakeLights;
+    if(s->scene.leftBlinker!=datad.leftBlinker || s->scene.rightBlinker!=datad.rightBlinker)
+      s->scene.blinker_blinkingrate = 100;
+    s->scene.leftBlinker = datad.leftBlinker;
+    s->scene.rightBlinker = datad.rightBlinker;
+  } else if (eventd.which == cereal_Event_gpsLocationExternal) {
+    struct cereal_GpsLocationData datad;
+    cereal_read_GpsLocationData(&datad, eventd.gpsLocationExternal);
+    s->scene.gpsAccuracy = datad.accuracy;
+    if (s->scene.gpsAccuracy > 100)
+    {
+      s->scene.gpsAccuracy = 99.99;
+    }
+    else if (s->scene.gpsAccuracy == 0)
+    {
+      s->scene.gpsAccuracy = 99.8;
+    }
   }
   capn_free(&ctx);
+}
+
+void handle_message_arne182(UIState *s, Message * msg) {
+  struct capn ctxarne182;
+  capn_init_mem(&ctxarne182, (uint8_t*)msg->getData(), msg->getSize(), 0);
+
+  cereal_EventArne182_ptr eventarne182p;
+  eventarne182p.p = capn_getp(capn_root(&ctxarne182), 0, 1);
+  struct cereal_EventArne182 eventarne182d;
+  cereal_read_EventArne182(&eventarne182d, eventarne182p);
+
+  if (eventarne182d.which == cereal_EventArne182_thermalonline) {
+    struct cereal_ThermalOnlineData datad;
+    cereal_read_ThermalOnlineData(&datad, eventarne182d.thermalonline);
+
+    s->scene.pa0 = datad.pa0;
+    s->scene.freeSpace = datad.freeSpace;
+  } else if (eventarne182d.which == cereal_EventArne182_arne182Status) {
+    struct cereal_Arne182Status datad;
+    cereal_read_Arne182Status(&datad, eventarne182d.arne182Status);
+    s->scene.leftblindspot = datad.leftBlindspot;
+    s->scene.leftblindspotD1 = datad.leftBlindspotD1;
+    s->scene.leftblindspotD2 = datad.leftBlindspotD2;
+    s->scene.rightblindspot = datad.rightBlindspot;
+    s->scene.rightblindspotD1 = datad.rightBlindspotD1;
+    s->scene.rightblindspotD2 = datad.rightBlindspotD2;
+  }
+  capn_free(&ctxarne182);
 }
 
 static void ui_update(UIState *s) {
@@ -575,7 +695,7 @@ static void ui_update(UIState *s) {
     auto polls = s->poller->poll(0);
 
     if (polls.size() == 0)
-      return;
+      break;
 
     for (auto sock : polls){
       Message * msg = sock->receive();
@@ -586,6 +706,23 @@ static void ui_update(UIState *s) {
       handle_message(s, msg);
 
       delete msg;
+    }
+  }
+  while(true) {
+    auto pollsarne182 = s->pollerarne182->poll(0);
+
+    if (pollsarne182.size() == 0)
+      return;
+
+    for (auto sock : pollsarne182){
+      Message * msgarne182 = sock->receive();
+      if (msgarne182 == NULL) continue;
+
+      set_awake(s, true);
+
+      handle_message_arne182(s, msgarne182);
+
+      delete msgarne182;
     }
   }
 }
@@ -660,6 +797,17 @@ static void* vision_connect_thread(void *args) {
     // Drain sockets
     while (true){
       auto polls = s->poller->poll(0);
+      if (polls.size() == 0)
+        break;
+
+      for (auto sock : polls){
+        Message * msg = sock->receive();
+        if (msg == NULL) continue;
+        delete msg;
+      }
+    }
+    while (true){
+      auto polls = s->pollerarne182->poll(0);
       if (polls.size() == 0)
         break;
 
@@ -877,6 +1025,14 @@ int main(int argc, char* argv[]) {
       }
     }
 
+    //awake on any touch
+    int touch_x = -1, touch_y = -1;
+    int touched = touch_poll(&touch, &touch_x, &touch_y, s->awake ? 0 : 100);
+    if (touched == 1) {
+      set_awake(s, true);
+    }
+
+
     // manage wakefulness
     if (s->awake_timeout > 0) {
       s->awake_timeout--;
@@ -884,8 +1040,20 @@ int main(int argc, char* argv[]) {
       set_awake(s, false);
     }
 
+    //dfButton manager  // code below thanks to kumar: https://github.com/arne182/openpilot/commit/71d5aac9f8a3f5942e89634b20cbabf3e19e3e78
+    if (s->awake && s->vision_connected && s->active_app == cereal_UiLayoutState_App_home && s->status != STATUS_STOPPED) {
+      if (df_button_clicked(touch_x, touch_y)) {
+        s->scene.dfButtonStatus++;
+        if (s->scene.dfButtonStatus > 2){
+          s->scene.dfButtonStatus = 0;
+        }
+        send_df(s, s->scene.dfButtonStatus);
+      }
+    }
+
     // Don't waste resources on drawing in case screen is off or car is not started.
     if (s->awake && s->vision_connected) {
+      dashcam(s, touch_x, touch_y);
       ui_draw(s);
       glFinish();
       should_swap = true;

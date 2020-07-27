@@ -24,6 +24,7 @@
 #include "messaging.hpp"
 
 #include "cereal/gen/c/log.capnp.h"
+#include "cereal/gen/c/arne182.capnp.h"
 
 #include "sound.hpp"
 
@@ -43,7 +44,7 @@
 #endif
 
 #define UI_BUF_COUNT 4
-//#define SHOW_SPEEDLIMIT 1
+#define SHOW_SPEEDLIMIT 1
 //#define DEBUG_TURN
 
 const int vwp_w = 1920;
@@ -97,9 +98,19 @@ typedef struct UIScene {
   float v_ego;
   bool decel_for_model;
 
+  float gpsAccuracy;
   float speedlimit;
+  float angleSteers;
+  float speedlimitaheaddistance;
+  bool speedlimitahead_valid;
   bool speedlimit_valid;
   bool map_valid;
+  bool rightblindspot;
+  float rightblindspotD1;
+  float rightblindspotD2;
+  bool leftblindspot;
+  float leftblindspotD1;
+  float leftblindspotD2;
 
   float curvature;
   int engaged;
@@ -114,9 +125,12 @@ typedef struct UIScene {
   int ui_viz_ro;
 
   int lead_status;
+  int lead_status2;
   float lead_d_rel, lead_y_rel, lead_v_rel;
+  float lead_d_rel2, lead_y_rel2, lead_v_rel2;
 
   int front_box_x, front_box_y, front_box_width, front_box_height;
+
 
   uint64_t alert_ts;
   char alert_text1[1024];
@@ -126,8 +140,30 @@ typedef struct UIScene {
 
   float awareness_status;
 
+  int dfButtonStatus;
+
+  bool recording;
+
+  // gernby pathcoloring
+  float output_scale;
+  bool steerOverride;
+
   // Used to show gps planner status
   bool gps_planner_active;
+
+  // Brake Lights
+  bool brakeLights;
+
+  // kegman blinker
+  bool leftBlinker;
+  bool rightBlinker;
+  int blinker_blinkingrate;
+
+  // dev ui
+  float angleSteersDes;
+  float pa0;
+  float freeSpace;
+
 } UIScene;
 
 typedef struct {
@@ -162,19 +198,28 @@ typedef struct UIState {
   int font_sans_semibold;
   int font_sans_bold;
   int img_wheel;
+  int img_speed;
   int img_turn;
   int img_face;
   int img_map;
+  int img_brake;
 
   // sockets
   Context *ctx;
+  Context *ctxarne182;
   SubSocket *model_sock;
   SubSocket *controlsstate_sock;
   SubSocket *livecalibration_sock;
   SubSocket *radarstate_sock;
+  SubSocket *carstate_sock;
+  SubSocket *livempc_sock;
   SubSocket *map_data_sock;
   SubSocket *uilayout_sock;
+  SubSocket *gps_sock;
+  SubSocket *arne182_sock;
+  PubSocket *dynamicfollowbutton_sock;
   Poller * poller;
+  Poller * pollerarne182;
 
   int active_app;
 
@@ -247,6 +292,9 @@ typedef struct UIState {
   model_path_vertices_data model_path_vertices[MODEL_LANE_PATH_CNT * 2];
 
   track_vertices_data track_vertices[2];
+
+  // dev ui
+  SubSocket *thermal_sock;
 } UIState;
 
 // API
