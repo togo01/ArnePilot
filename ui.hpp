@@ -24,6 +24,7 @@
 #include "messaging.hpp"
 
 #include "cereal/gen/c/log.capnp.h"
+#include "cereal/gen/c/arne182.capnp.h"
 
 #include "sound.hpp"
 
@@ -43,13 +44,14 @@
 #define COLOR_WHITE_ALPHA nvgRGBA(255, 255, 255, 85)
 #define COLOR_YELLOW nvgRGBA(218, 202, 37, 255)
 #define COLOR_RED nvgRGBA(201, 34, 49, 255)
+#define COLOR_GREEN nvgRGBA(34, 201, 49, 255)
 
 #ifndef QCOM
   #define UI_60FPS
 #endif
 
 #define UI_BUF_COUNT 4
-//#define SHOW_SPEEDLIMIT 1
+#define SHOW_SPEEDLIMIT 1
 //#define DEBUG_TURN
 
 const int vwp_w = 1920;
@@ -110,10 +112,20 @@ typedef struct UIScene {
   uint64_t v_cruise_update_ts;
   float v_ego;
   bool decel_for_model;
-
+  char ipAddr[20];
+  float gpsAccuracy;
   float speedlimit;
+  float angleSteers;
+  float speedlimitaheaddistance;
+  bool speedlimitahead_valid;
   bool speedlimit_valid;
   bool map_valid;
+  bool rightblindspot;
+  float rightblindspotD1;
+  float rightblindspotD2;
+  bool leftblindspot;
+  float leftblindspotD1;
+  float leftblindspotD2;
 
   float curvature;
   int engaged;
@@ -128,12 +140,12 @@ typedef struct UIScene {
   int ui_viz_ro;
 
   int lead_status;
-  float lead_d_rel, lead_y_rel, lead_v_rel;
-
   int lead_status2;
+  float lead_d_rel, lead_y_rel, lead_v_rel;
   float lead_d_rel2, lead_y_rel2, lead_v_rel2;
 
   int front_box_x, front_box_y, front_box_width, front_box_height;
+
 
   uint64_t alert_ts;
   char alert_text1[1024];
@@ -143,14 +155,34 @@ typedef struct UIScene {
 
   float awareness_status;
 
+  int dfButtonStatus;
+
+  bool recording;
+
+  // gernby pathcoloring
+  float output_scale;
+  bool steerOverride;
+
   // Used to show gps planner status
   bool gps_planner_active;
+
+  // Brake Lights
+  bool brakeLights;
+
+  // kegman blinker
+  bool leftBlinker;
+  bool rightBlinker;
+  int blinker_blinkingrate;
+
+  // dev ui
+  float angleSteersDes;
+  float pa0;
+  float freeSpace;
 
   uint8_t networkType;
   uint8_t networkStrength;
   int batteryPercent;
   char batteryStatus[64];
-  float freeSpace;
   uint8_t thermalStatus;
   int paTemp;
   int hwType;
@@ -189,9 +221,11 @@ typedef struct UIState {
   int font_sans_semibold;
   int font_sans_bold;
   int img_wheel;
+  int img_speed;
   int img_turn;
   int img_face;
   int img_map;
+  int img_brake;
   int img_button_settings;
   int img_button_home;
   int img_battery;
@@ -200,16 +234,24 @@ typedef struct UIState {
 
   // sockets
   Context *ctx;
+  Context *ctxarne182;
   SubSocket *model_sock;
   SubSocket *controlsstate_sock;
   SubSocket *livecalibration_sock;
   SubSocket *radarstate_sock;
+  SubSocket *carstate_sock;
+  SubSocket *livempc_sock;
   SubSocket *map_data_sock;
   SubSocket *uilayout_sock;
-  SubSocket *thermal_sock;
+  SubSocket *gps_sock;
+  SubSocket *arne182_sock;
+  SubSocket *ipaddress_sock;
+  PubSocket *dynamicfollowbutton_sock;
+  Poller * poller;
+  Poller * pollerarne182;
+  SubSocket *thermalonline_sock;
   SubSocket *health_sock;
   SubSocket *ubloxgnss_sock;
-  Poller * poller;
   Poller * ublox_poller;
 
   int active_app;
@@ -257,7 +299,6 @@ typedef struct UIState {
   int hardware_timeout;
 
   bool controls_seen;
-
   int status;
   bool is_metric;
   bool longitudinal_control;
@@ -284,6 +325,9 @@ typedef struct UIState {
   model_path_vertices_data model_path_vertices[MODEL_LANE_PATH_CNT * 2];
 
   track_vertices_data track_vertices[2];
+
+  // dev ui
+  SubSocket *thermal_sock;
 } UIState;
 
 // API
