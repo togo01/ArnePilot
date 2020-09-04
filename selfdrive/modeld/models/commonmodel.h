@@ -16,6 +16,7 @@
 extern "C" {
 #endif
 
+void softmax(const float* input, float* output, size_t len);
 float softplus(float input);
 float sigmoid(float input);
 
@@ -44,4 +45,3 @@ void frame_free(ModelFrame* frame);
 #endif
 
 #endif
-
