@@ -279,7 +279,7 @@ EVENTS = {
 
   EventName.startup: {
     ET.PERMANENT: Alert(
-      "WARNING: This branch is not tested"",
+      "WARNING: This branch is not tested",
       "Do not forget to PRAY!",
       AlertStatus.userPrompt, AlertSize.mid,
       Priority.LOWER, VisualAlert.none, AudibleAlert.none, 0., 0., 7.),
